@@ -1,0 +1,13 @@
+id,integer_values,float_values,category,flag,all_filled,all_empty,new_default_string_column_column
+1,10,2.5,alpha,true,5,DEFAULT,
+2,20,5,beta,false,5,DEFAULT,
+3,20,5,alpha,true,5,DEFAULT,
+4,,,,,5,DEFAULT,
+5,-10,-2.5,gamma,false,5,DEFAULT,
+6,0,0,beta,false,5,DEFAULT,
+7,20,5,alpha,true,5,DEFAULT,
+8,30,7.5,delta,true,5,DEFAULT,
+9,,,,,5,DEFAULT,
+10,10,2.5,beta,false,5,DEFAULT,
+11,40,10,alpha,true,5,DEFAULT,
+12,,,,,5,DEFAULT,

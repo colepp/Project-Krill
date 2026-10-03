@@ -1,0 +1,12 @@
+[package]
+name = "krill"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+debug = 1 # Provides line numbers and filenames, but omits local variable debug info
+
+
+[dependencies]
+thiserror = "2.0.21"
+ordered-float = "5.5.0"
