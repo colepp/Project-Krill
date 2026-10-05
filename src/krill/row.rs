@@ -27,8 +27,8 @@
             Ok(value)
         }
 
-        pub fn remove_value_from_row(&mut self, column_number: usize) -> Result<(),Box<dyn Error>> {
-            
+        pub fn remove_value_from_row(&mut self, column_number: usize) -> Result<Value,Box<dyn Error>> {
+            Ok(self.values.remove(column_number))
         }
     }
 

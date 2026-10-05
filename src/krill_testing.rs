@@ -195,3 +195,12 @@
 
 #[path = "krill_testing/failure_cases.rs"]
 mod failure_cases;
+
+#[path = "krill_testing/table_mutations.rs"]
+mod table_mutations;
+
+#[path = "krill_testing/row_filters.rs"]
+mod row_filters;
+
+#[path = "krill_testing/find_rows.rs"]
+mod find_rows;

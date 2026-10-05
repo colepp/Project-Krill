@@ -6,6 +6,17 @@
         rows: Vec<Row>,
     }
 
+    pub enum FilterType<T> {
+        NonEmpty,
+        Empty,
+        Conditional(T),
+    }
+
+    pub enum FindRowResultTypes<'a> {
+        FindRowResult(&'a Row,usize),
+        FindRowResultMutable(&'a mut Row,usize),
+    }
+
     impl fmt::Display for Table<'_> {
         fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
             if self.column_names.is_empty() {
@@ -81,7 +92,7 @@
         /// `Result<Value,Box<dyn Error>>`, the closure must also ingest in order a reference to the table being worked on and the target row as a `usize`
         /// 
     
-        pub fn fillna_column<T>(&mut self,column_name: &str,replacement_function: T, inplace: bool) -> Result<Option<Table<'_>>,Box<dyn Error>>
+        pub fn fillna_column<T>(&mut self,column_name: &str,replacement_function: T, inplace: bool) -> Result<Option<Self>,Box<dyn Error>>
         where T: Fn(&Table,usize) -> Result<Value,Box<dyn Error>> {
 
             let column_details = self.column_details(column_name)?;
@@ -96,14 +107,14 @@
                     println!("{}",value);
                     if value.is_empty() {
                         let new_value = replacement_function(self,row_number)?;
-                        Self::replace_value_on_row(&mut self.rows,row_number, column_number, new_value)?;
+                        self.replace_value_on_row(row_number, column_number, new_value, true)?;
                         }
                 }
                 return Ok(None);
             }
 
             let mut copy_table = self.clone();
-            for row_number in 0..copy_table.column_names.len() {
+            for row_number in 0..copy_table.rows.len() {
 
             
                 
@@ -113,7 +124,7 @@
                 .get_value_from_row(column_number)?
                 .value_type() == ValueType::EMPTY {
                     let new_value = replacement_function(self,row_number)?;
-                    Self::replace_value_on_row(&mut copy_table.rows,row_number, column_number, new_value)?;
+                    copy_table.replace_value_on_row(row_number, column_number, new_value, true)?;
                 }
             }   
             Ok(Some(copy_table))
@@ -124,16 +135,18 @@
         // row data access and modification
 
 
-        /// Replaces a value in a given column on a target row, takes a mutable reference to the rows table,
-        ///  the row number, the column number, and the replacement value 
-        pub fn replace_value_on_row(rows: &mut [Row],row_number: usize,column_number: usize, value: Value) -> Result<(),Box<dyn Error>> {
-            if let Some(row) = rows.get_mut(row_number) {
-                row.values[column_number] = value;
-                return Ok(());
-            }
-            Err(Box::new(KrillErrors::RowOutOfBounds(row_number, rows.len())))
+        /// Replaces a value at the given row and column indices.
+        /// Returns None when inplace is true; otherwise returns a modified copy.
+        pub fn replace_value_on_row(&mut self, row_number: usize, column_number: usize, value: Value, inplace: bool) -> Result<Option<Self>, Box<dyn Error>> {
+            self.with_inplace(inplace, |table| {
+                let row = table.get_row_mut(row_number)?;
+                let column_count = row.values.len();
+                let target = row.values.get_mut(column_number)
+                    .ok_or_else(|| KrillErrors::ColumnOutOfBounds(column_number, column_count))?;
+                *target = value;
+                Ok(())
+            })
         }
-        
 
         /// Returns a non mutable reference to the rows table
         pub fn rows(&self) -> &[Row] {
@@ -158,46 +171,206 @@
             self.rows.get_mut(row_number).ok_or_else(|| KrillErrors::RowOutOfBounds(row_number,len ))
         }
 
-
-        /// adds column of given name assuming it does not already exist
-        pub fn add_column_empty(&mut self, column_name: &str,inplace:bool) -> Result<(),Box<dyn Error>> {
-            if !self.column_names.contains(&column_name.to_string()) {
-                self.column_names.push(column_name.to_string());
-                self.column_map.insert(column_name.to_string(), ColumnDetails { column_number: self.column_names.len() - 1, value_type: ValueType::Unset });
-
-                for row in self.rows_mut() {
-                    row.values.push(Value::Empty);
+        /// Appends a row in column order, padding omitted trailing values with Value::Empty.
+        /// Empty values are allowed in every column. Nonempty values establish unset
+        /// column types and must otherwise match the existing type.
+        /// Invalid rows return an error without changing rows or column types.
+        /// Returns None when inplace is true; otherwise returns a modified copy.
+        pub fn add_row(&mut self, mut row_values: Vec<Value>, inplace: bool) -> Result<Option<Self>, Box<dyn Error>> {
+            self.with_inplace(inplace, |table| {
+                if row_values.len() > table.column_names.len() {
+                    return Err(Box::new(KrillErrors::TooManyArguments(row_values.len(),table.column_names.len())))
                 }
-            }
 
-            Ok(())
+                // Validate the entire row before changing any inferred column types.
+                for (value, column_name) in row_values.iter().zip(&table.column_names) {
+                    let column_details = table.column_details(column_name)?;
+                    if !value.is_empty()
+                        && column_details.value_type != ValueType::Unset
+                        && column_details.value_type != value.value_type()
+                    {
+                        return Err(Box::new(KrillErrors::ColumnTypeMismatched(
+                                column_details.value_type, value.value_type(),
+                        )));
+                    }
+                }
+
+                for (value, column_name) in row_values.iter().zip(&table.column_names) {
+                    let column_details = table.column_map.get_mut(column_name).unwrap();
+                    if column_details.value_type == ValueType::Unset && !value.is_empty() {
+                        column_details.value_type = value.value_type();
+                    }
+                }
+
+                while row_values.len() < table.column_names.len() {
+                    row_values.push(Value::Empty)
+                }
+
+                let new_row = Row {
+                    values: row_values,
+                };
+                table.rows.push(new_row);
+
+
+
+                Ok(())
+            })
         }
 
-        pub fn add_column_default(&mut self,default_value: Value, column_name: &str,inplace:bool) -> Result<(),Box<dyn Error>> {
-            if !self.column_names.contains(&column_name.to_string()) {
-                self.column_names.push(column_name.to_string());
-                self.column_map.insert(column_name.to_string(), ColumnDetails { column_number: self.column_names.len() - 1, value_type: default_value.value_type() });
-
-                for row in self.rows_mut() {
-                    row.values.push(default_value.clone());
+        /// Removes a row while preserving the order of the remaining rows.
+        /// Returns None when inplace is true; otherwise returns a modified copy.
+        pub fn remove_row(&mut self, row_number: usize, inplace: bool) -> Result<Option<Self>, Box<dyn Error>> {
+            self.with_inplace(inplace, |table| {
+                if row_number >= table.rows.len() {
+                    return Err(Box::new(KrillErrors::RowOutOfBounds(row_number, table.rows.len())));
                 }
-            }
-
-            Ok(())
+                table.rows.remove(row_number);
+                Ok(())
+            })
         }
 
-        /// removes column of given name if it exists
-        pub fn rem_col(&mut self, column_name: &str,inplace:bool) -> Result<(),Box<dyn Error>>  {
-            for row in self.rows_mut().iter_mut() {
-                row.remove_value_from_row(self.column_index(column_name)?)?;
+        // Match fillna: mutate self and return None, or mutate a clone and return it.
+        fn with_inplace<F>(&mut self, inplace: bool, operation: F) -> Result<Option<Self>, Box<dyn Error>>
+        where F: FnOnce(&mut Self) -> Result<(), Box<dyn Error>> {
+            if inplace {
+                operation(self)?;
+                Ok(None)
+            } else {
+                let mut copy = self.clone();
+                operation(&mut copy)?;
+                Ok(Some(copy))
             }
+        }
 
-            Ok(())
+        /// Adds an empty column unless the name already exists.
+        /// Returns None when inplace is true; otherwise returns a modified copy.
+        pub fn add_column_empty(&mut self, column_name: &str, inplace: bool) -> Result<Option<Self>, Box<dyn Error>> {
+            self.add_column_default(Value::Empty, column_name, inplace)
+        }
+
+        /// Adds a column filled with default_value unless the name already exists.
+        /// Returns None when inplace is true; otherwise returns a modified copy.
+        pub fn add_column_default(&mut self, default_value: Value, column_name: &str, inplace: bool) -> Result<Option<Self>, Box<dyn Error>> {
+            self.with_inplace(inplace, |table| {
+                if !table.column_names.iter().any(|name| name == column_name) {
+                    let value_type = if default_value.is_empty() {
+                        ValueType::Unset
+                    } else {
+                        default_value.value_type()
+                    };
+                    table.column_map.insert(column_name.to_string(), ColumnDetails {
+                        column_number: table.column_names.len(), value_type,
+                    });
+                    table.column_names.push(column_name.to_string());
+                    for row in &mut table.rows {
+                        row.values.push(default_value.clone());
+                    }
+                }
+                Ok(())
+            })
+        }
+
+        /// Removes a column and its values, preserving the order of remaining columns.
+        /// Returns None when inplace is true; otherwise returns a modified copy.
+        pub fn rem_col(&mut self, column_name: &str, inplace: bool) -> Result<Option<Self>, Box<dyn Error>> {
+            self.with_inplace(inplace, |table| {
+                let column_number = table.column_index(column_name)?;
+                // Reject incomplete rows before changing the table.
+                for row in &table.rows {
+                    row.get_value_from_row(column_number)?;
+                }
+                for row in &mut table.rows {
+                    row.remove_value_from_row(column_number)?;
+                }
+                table.column_map.remove(column_name);
+                table.column_names.retain(|name| name != column_name);
+                for (column_number, column_name) in table.column_names.iter().enumerate() {
+                    let details = table.column_map.get_mut(column_name)
+                        .ok_or_else(|| KrillErrors::ColumnNotFound(column_name.clone()))?;
+                    details.column_number = column_number;
+                }
+                Ok(())
+            })
+        }
+
+        fn row_empty(row: &Row) -> bool{
+            for value in row.values.iter() {
+                if !value.is_empty() {
+                    return false
+                }
+            }
+            true
+        }
+
+
+        pub fn filter_row<T>(&mut self,filter_type: FilterType<T>,inplace: bool ) 
+        -> Result<Option<Self>,Box<dyn Error>>
+        where T: Fn(&Row) -> bool {
+            self.with_inplace(inplace,|table| {
+                let mut row_number = 0;
+                let mut table_len = table.rows.len();
+
+                 while row_number < table_len {
+                    let row = table.get_row(row_number)?;
+                    if match filter_type {
+                        FilterType::Empty => Self::row_empty(row),
+                        FilterType::NonEmpty => !Self::row_empty(row),
+                        FilterType::Conditional(ref condition) => condition(row)
+                    } {
+                        table.remove_row(row_number,true)?;
+                        table_len = table.rows.len();
+                        row_number = if row_number == 0 {
+                            0
+                        } else {
+                            row_number - 1
+                        }
+                    } else {
+                        row_number += 1;
+                    }
+                }
+
+                Ok(())
+            })
+        }
+
+
+        pub fn find_rows<T>(&'_ self,filter_type: FilterType<T>) -> Result<Vec<FindRowResultTypes<'_>>,Box<dyn Error>>
+        where T: Fn(&Row) -> bool {
+            let mut res = vec![];
+            for (row_number,row) in self.rows().iter().enumerate() {
+                if match filter_type {
+                        FilterType::Empty => Self::row_empty(row),
+                        FilterType::NonEmpty => !Self::row_empty(row),
+                        FilterType::Conditional(ref condition) => condition(row)
+                    } {
+                        res.push(
+                            FindRowResultTypes::FindRowResult(row,row_number)
+                        );
+                    }
+            }
+            Ok(res)
+        }
+
+        pub fn find_rows_mut<T>(&'_ mut self,filter_type: FilterType<T>) -> Result<Vec<FindRowResultTypes<'_>>,Box<dyn Error>>
+        where T: Fn(&Row) -> bool {
+            let mut res = vec![];
+            for (row_number,row) in self.rows_mut().iter_mut().enumerate() {
+                if match filter_type {
+                        FilterType::Empty => Self::row_empty(row),
+                        FilterType::NonEmpty => !Self::row_empty(row),
+                        FilterType::Conditional(ref condition) => condition(row)
+                    } {
+                        res.push(
+                            FindRowResultTypes::FindRowResultMutable(row,row_number)
+                        );
+                    }
+            }
+            Ok(res)
         }
 
         // column data access and modification
         /// returns an non mutable Column iterator over a given column name
-        pub fn column_iter(&self, column_name: &str) -> Result<Column,Box<dyn Error>> {
+        pub fn column_iter(&'_ self, column_name: &str) -> Result<Column<'_>,Box<dyn Error>> {
             
             let column_details = self.column_details(column_name)?;
             Ok(Column {
@@ -226,6 +399,10 @@
             Ok(column_details)
 
         }
+
+
+
+
         /// returns the type of a given column
         pub fn column_type(&self,column_name: &str) -> Result<ValueType,KrillErrors> {
             let column = self.column_map.get(column_name).ok_or_else(|| KrillErrors::ColumnNotFound(column_name.to_string()))?;

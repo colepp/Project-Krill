@@ -1,3 +1,5 @@
+use core::error;
+
     #[derive(Error,Debug)]
     pub enum KrillErrors {
         #[error("Tried to read CSV file: {0} , but file is invalid type")]
@@ -16,6 +18,8 @@
         ColumnTypeMismatched(ValueType,ValueType),
         #[error("Attempted Numeric Operation On Non-Numeric Type")]
         OperationOnNonNumericType,
+        #[error("Too many args for row, only {0} values but {1} were given")]
+        TooManyArguments(usize,usize)
 
 
     }
